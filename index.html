@@ -242,12 +242,24 @@ function clearMarket(){
   }
   const totalSupply=s.length?s[s.length-1].q1:0;
   const totalDemand=d.length?d[d.length-1].q1:0;
-  let shortage=false, firmShed=false;
-  if(Q>=totalSupply-1e-9 && totalSupply<totalDemand-1e-9){
-    const lastSupplyPrice = s.length?s[s.length-1].price:0;
-    const dpAtEdge = dP(Math.min(totalSupply+1e-6,totalDemand-1e-9));
-    if(dpAtEdge!=null && dpAtEdge>=lastSupplyPrice-1e-9){
-      shortage=true; Q=totalSupply; P=dpAtEdge;
+  let shortage=false, firmShed=false, priceSetter=null;
+  if(Q>0){
+    /* Price = lowest price that clears Q: max(cost of last dispatched supply, bid of first unserved demand).
+       Partially dispatched supply block -> its cost sets the price.
+       Partially served demand block -> its bid sets the price. */
+    const sBelow=sP(Q-1e-6);
+    const dAbove=(Q<totalDemand-1e-9)?dP(Q+1e-6):null;
+    if(dAbove!=null && dAbove>sBelow+1e-9){
+      P=dAbove;
+      const blk=d.find(b=>Q+1e-6>b.q0&&Q+1e-6<=b.q1);
+      priceSetter={side:'demand',key:blk.key,label:blk.label,price:dAbove};
+    }else{
+      P=sBelow;
+      const blk=s.find(b=>Q-1e-6>b.q0&&Q-1e-6<=b.q1);
+      priceSetter={side:'supply',key:blk.key,label:blk.label,price:sBelow};
+    }
+    if(Q>=totalSupply-1e-9 && totalSupply<totalDemand-1e-9 && dAbove!=null && dAbove>=sBelow-1e-9){
+      shortage=true;
       if(Q<DEMAND.Firm.mw-1e-9) firmShed=true;
     }
   }
@@ -256,7 +268,7 @@ function clearMarket(){
   let cs=0; for(const b of dServ) cs+=(b.price-P)*b.mwServ;
   let ps=0; for(const b of sDisp) ps+=(P-b.price)*b.mwDisp;
   const ts=cs+ps;
-  return {s,d,Q,P,sDisp,dServ,totalSupply,totalDemand,shortage,firmShed,cs,ps,ts};
+  return {s,d,Q,P,sDisp,dServ,totalSupply,totalDemand,shortage,firmShed,cs,ps,ts,priceSetter};
 }
 
 /* ---------- chart (inline SVG — scales via viewBox, no canvas/DPR/resize-observer plumbing) ---------- */
@@ -356,9 +368,12 @@ function render(){
   }else if(r.Q<=0){
     st.className='statusline warn';
     st.textContent='No trade: the cheapest supply bid exceeds the highest demand willingness to pay.';
+  }else if(r.priceSetter && r.priceSetter.side==='demand'){
+    st.className='statusline ok';
+    st.textContent='Market clears — demand block '+r.priceSetter.label+' is only partly served, so its bid of €'+Math.round(r.P)+'/MWh sets the price. Every dispatched unit is paid this uniform price regardless of its own bid.';
   }else{
     st.className='statusline ok';
-    st.textContent='Market clears — every dispatched unit is paid the uniform price of €'+Math.round(r.P)+'/MWh regardless of its own bid.';
+    st.textContent='Market clears — '+(r.priceSetter?r.priceSetter.label+' is the marginal unit, and ':'')+'every dispatched unit is paid the uniform price of €'+Math.round(r.P)+'/MWh regardless of its own bid.';
   }
 
   const dispByKey={}; for(const b of r.sDisp) dispByKey[b.key]=b;
@@ -385,8 +400,9 @@ function render(){
   for(const k of DORDER){
     const g=DEMAND[k], d=servByKey[k], mwS=d?d.mwServ:0;
     const util=mwS*g.price, pay=mwS*(r.P||0);
+    const dMarg=r.priceSetter&&r.priceSetter.side==='demand'&&r.priceSetter.key===k;
     totD+=mwS; totUtil+=util; totPay+=pay;
-    html2+=`<tr>
+    html2+=`<tr class="${dMarg?'marginal':''}">
       <td class="nm2"><span class="swsq" style="background:${g.color}"></span>${g.label}</td>
       <td class="num">€${trim(g.price)}</td>
       <td class="num">${trim(g.mw)}</td>
